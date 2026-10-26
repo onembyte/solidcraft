@@ -36,6 +36,8 @@ pub mod paste;
 #[cfg(not(target_arch = "wasm32"))]
 mod process;
 pub mod settings;
+#[cfg(not(target_arch = "wasm32"))]
+pub mod store;
 pub mod summary;
 
 use std::sync::Arc;
