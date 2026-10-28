@@ -39,6 +39,30 @@ pub fn unsaved_folder(data: &Path, id: &str) -> PathBuf {
     data.join("agent-chat").join("contexts").join(id)
 }
 
+/// Move a context folder out of the way when a design is saved over one that had its own
+/// conversation: `c_context` becomes `c_context.old` (`c_context.old-2`, … when that is taken),
+/// never merged or deleted. Where it went.
+pub fn set_aside(dir: &Path) -> io::Result<PathBuf> {
+    real_dir(dir)?;
+    let name = dir.file_name().ok_or_else(|| io::Error::new(ErrorKind::InvalidInput, "context has no folder name"))?;
+    let mut number = 1_u64;
+    loop {
+        let mut candidate = name.to_os_string();
+        candidate.push(if number == 1 { ".old".to_owned() } else { format!(".old-{number}") });
+        let target = dir.with_file_name(candidate);
+        match fs::symlink_metadata(&target) {
+            Ok(_) => {
+                number = number.checked_add(1).ok_or_else(|| io::Error::new(ErrorKind::AlreadyExists, "no available context folder name"))?;
+            }
+            Err(error) if error.kind() == ErrorKind::NotFound => {
+                fs::rename(dir, &target)?;
+                return Ok(target);
+            }
+            Err(error) => return Err(error),
+        }
+    }
+}
+
 /// `context.json`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 pub struct Meta {
@@ -635,6 +659,22 @@ mod tests {
         let err = src.copy_to(&root.join("copy_context"), "copy.sc").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::AlreadyExists);
         assert_eq!(Context::open(&root.join("copy_context")).unwrap().transcript().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn context_set_aside_keeps_every_earlier_folder() {
+        let root = scratch("aside");
+        let dir = root.join("c_context");
+        let first = Context::create(&dir, "c.sc", "claude").unwrap();
+        first.append(&user("first")).unwrap();
+        assert_eq!(set_aside(&dir).unwrap(), root.join("c_context.old"));
+        assert!(!dir.exists());
+        let second = Context::create(&dir, "c.sc", "claude").unwrap();
+        second.append(&user("second")).unwrap();
+        assert_eq!(set_aside(&dir).unwrap(), root.join("c_context.old-2"));
+        assert_eq!(Context::open(&root.join("c_context.old")).unwrap().transcript().unwrap(), vec![user("first")]);
+        assert_eq!(Context::open(&root.join("c_context.old-2")).unwrap().transcript().unwrap(), vec![user("second")]);
+        assert_eq!(set_aside(&root.join("missing_context")).unwrap_err().kind(), ErrorKind::NotFound);
     }
 
     #[cfg(unix)]
