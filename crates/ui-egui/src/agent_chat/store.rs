@@ -207,6 +207,10 @@ impl Context {
     /// fresh id: `context.json`, an empty `transcript.jsonl` and `references/`. A folder already
     /// holding a `context.json` is left as it is (`AlreadyExists`).
     pub fn create(dir: &Path, design: &str, agent: &str) -> io::Result<Context> {
+        Self::create_with_id(dir, design, agent, new_id()?)
+    }
+
+    fn create_with_id(dir: &Path, design: &str, agent: &str, id: String) -> io::Result<Context> {
         reject_link(dir)?;
         if fs::symlink_metadata(dir.join("context.json")).is_ok() {
             return Err(io::Error::new(ErrorKind::AlreadyExists, "context already exists"));
@@ -214,7 +218,7 @@ impl Context {
         fs::create_dir_all(dir)?;
         real_dir(dir)?;
         let meta = Meta {
-            id: new_id()?,
+            id,
             design: design.to_owned(),
             agent: agent.to_owned(),
             created: SystemTime::now().duration_since(UNIX_EPOCH).map_err(|error| io::Error::new(ErrorKind::InvalidData, error))?.as_secs(),
@@ -224,6 +228,14 @@ impl Context {
         OpenOptions::new().write(true).create_new(true).open(dir.join("transcript.jsonl"))?;
         fs::create_dir(dir.join("references"))?;
         Ok(Context { dir: dir.to_path_buf(), meta })
+    }
+
+    /// Make a new context for a design that has not been saved yet, in
+    /// [`unsaved_folder`]`(data, id)`: the folder is named by the context's own id, so either
+    /// finds the other. Its design is empty until the first save moves it beside the file.
+    pub fn create_unsaved(data: &Path, agent: &str) -> io::Result<Context> {
+        let id = new_id()?;
+        Self::create_with_id(&unsaved_folder(data, &id), "", agent, id)
     }
 
     /// Open the context in `dir`: `NotFound` without a `context.json`, `InvalidData` when it
@@ -476,6 +488,22 @@ mod tests {
         let again = Context::open(&dir).unwrap();
         assert_eq!(again.meta(), first.meta());
         assert_eq!(again.transcript().unwrap(), vec![user("keep me")]);
+    }
+
+    #[test]
+    fn context_create_unsaved_names_the_folder_by_its_id() {
+        let data = scratch("unsaved");
+        let ctx = Context::create_unsaved(&data, "claude").unwrap();
+        // The folder and the context share one id, so either finds the other.
+        assert_eq!(ctx.dir(), unsaved_folder(&data, &ctx.meta().id).as_path());
+        assert_eq!(ctx.meta().design, "");
+        assert_eq!(ctx.meta().agent, "claude");
+        assert!(ctx.dir().join("transcript.jsonl").is_file());
+        assert_eq!(Context::open(ctx.dir()).unwrap().meta(), ctx.meta());
+        // Each unsaved design gets a folder of its own.
+        let other = Context::create_unsaved(&data, "claude").unwrap();
+        assert_ne!(other.dir(), ctx.dir());
+        assert_ne!(other.meta().id, ctx.meta().id);
     }
 
     #[test]
