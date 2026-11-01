@@ -508,6 +508,9 @@ pub struct Dialog {
     pub press_pull: bool,
     /// The operation the window chooses by itself (#6901).
     pub op_auto: crate::op_auto::OpAuto,
+    /// Where the face that reopened this fillet or chamfer was clicked (Press Pull): its arrow
+    /// sits on the edge nearest it. UI state only, never saved.
+    pub(crate) anchor_hint: Option<Vec3>,
 }
 
 #[derive(Clone, Debug)]
@@ -545,8 +548,11 @@ impl DialogComputation {
             session,
             cmds,
             marker: d.editing.map(|(_, marker)| marker),
+            // The editor's pinned original is for a dialog that previews (as `open_feature_edit`
+            // keeps it); one that no longer does (Modeled unticked) edits the design as it is.
             editing: d
                 .editing
+                .filter(|_| d.previews())
                 .and(app.editing_state.as_ref())
                 .map(|state| EditingState { source: state.source.scratch(), original: state.original.scratch() }),
         })
@@ -616,12 +622,13 @@ fn display_quality(app: &SolveApp) -> solidcraft_engine::doc::display_quality::D
     solidcraft_engine::doc::display_quality::DisplayQuality::parse(&app.preferences.display_quality).unwrap_or_default()
 }
 
-/// Desktop feature dialogs evaluate the entire command and its dependent suffix once.
-/// Results wait until a later frame before adoption, keeping the computing state visible.
+/// Desktop feature dialogs evaluate the entire command and its dependent suffix once; so does
+/// any feature edit, with a live preview or without. Results wait until a later frame before
+/// adoption, keeping the computing state visible.
 #[cfg(not(target_arch = "wasm32"))]
 pub(crate) fn begin_applying(app: &SolveApp, d: &Dialog) -> Option<Applying> {
     let wait = app.apply_off_thread?;
-    if !d.previews() {
+    if !d.previews() && d.editing.is_none() {
         return None;
     }
     let computation = DialogComputation::new(app, d).ok()?;
@@ -764,6 +771,7 @@ impl Dialog {
             shell_chain: Default::default(),
             press_pull: false,
             op_auto: Default::default(),
+            anchor_hint: None,
         }
     }
 
@@ -4641,33 +4649,31 @@ fn dialog_commands(app: &SolveApp, d: &Dialog) -> Result<Vec<(String, Value)>, S
         }
         Kind::Loft { operation, rail_fit } => {
             need(0, "profiles of two or more sketches")?;
-            // One section per sketch, in the order the sketches were first picked; a sketch point
-            // is a section of its own, an apex the loft closes to (#4830).
-            let mut sections: Vec<(u64, Vec<usize>, Option<&str>)> = Vec::new();
+            // Each picked profile is a section, in pick order, two of them from one sketch
+            // included (#8221); a sketch point is a section of its own, an apex the loft closes
+            // to (#4830).
+            let mut sections: Vec<Value> = Vec::new();
+            let (mut profile_sketches, mut apexes) = (Vec::new(), 0);
             for x in sels(d, 0) {
                 match x {
-                    Sel::Profile { sketch, index } => match sections.iter_mut().find(|(sk, _, apex)| sk == sketch && apex.is_none()) {
-                        Some((_, v, _)) => v.push(*index),
-                        None => sections.push((*sketch, vec![*index], None)),
-                    },
+                    Sel::Profile { sketch, index } => {
+                        sections.push(json!({"sketch": sketch, "profiles": [index]}));
+                        profile_sketches.push(*sketch);
+                    }
                     Sel::SketchPoint { id } => {
                         if let Some((sk, point)) = id.split_once(':').and_then(|(sk, point)| Some((sk.parse::<u64>().ok()?, point))) {
-                            sections.push((sk, Vec::new(), Some(point)));
+                            sections.push(json!({"sketch": sk, "point": point}));
+                            apexes += 1;
                         }
                     }
                     _ => {}
                 }
             }
-            if sections.len() < 2 {
+            profile_sketches.sort_unstable();
+            profile_sketches.dedup();
+            if profile_sketches.len() + apexes < 2 {
                 return Err("pick profiles in two or more sketches, or a profile and a sketch point".into());
             }
-            let sections: Vec<Value> = sections
-                .into_iter()
-                .map(|(sk, v, apex)| match apex {
-                    Some(point) => json!({"sketch": sk, "point": point}),
-                    None => json!({"sketch": sk, "profiles": v}),
-                })
-                .collect();
             let mut p = json!({"sections": sections, "operation": OPS.get(*operation).copied().unwrap_or("new")});
             crate::dialogs_sweep::rail_params(app, *rail_fit, [sels(d, 1), sels(d, 2)], &mut p)?;
             ("solid.loft", p)
@@ -6048,7 +6054,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                         let exprs: Vec<&str> = at.iter().map(|e| e.as_str()).collect();
                         d.extra.insert("position_exprs".into(), json!({"at": exprs, "point": pt3(position.0)}));
                     }
-                    crate::hole_refs::restore(s, &mut d, references, &f.edge_names);
+                    crate::hole_refs::restore(s, &mut d, references, &f.edge_names, app.preferences.length_decimals);
                 }
             }
             if to.is_some() {
@@ -6101,7 +6107,7 @@ pub fn for_feature(app: &SolveApp, id: u64, marker: Option<usize>) -> Option<Dia
                 if let Some(inp) = d.inputs.first_mut() {
                     inp.items = vec![face];
                 }
-                crate::hole_refs::restore(s, &mut d, references, &f.edge_names);
+                crate::hole_refs::restore(s, &mut d, references, &f.edge_names, app.preferences.length_decimals);
             }
             d
         }
