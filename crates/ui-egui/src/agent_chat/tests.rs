@@ -3775,6 +3775,40 @@ fn save_as_copies_the_conversation_and_carries_on_in_the_copy() {
     assert_eq!(user_texts(&records_in(&a)), ["hello"], "the first design's conversation stays as it was");
 }
 
+/// The agent's own New carries its conversation into the new design (#7526): the rest of the turn
+/// and what follows are kept in a copy under the data folder, as for any unsaved design.
+#[test]
+fn an_agents_new_design_keeps_its_conversation_on_disk() {
+    let root = context_scratch("agent-new");
+    let first = root.join("a.sc");
+    let data = root.join("data");
+    let (mut app, script, ctx) = app_on(Some(&first), &data);
+    let (tx, rx) = channel();
+    app.agent_chat.tools_rx = Some(rx);
+    app.preferences.ai_permissions = agents::Mode::All;
+    send(&mut app, &ctx, "start a second design".into());
+    let response = chat_tool(&mut app, &tx, &ctx, "engine.execute", json!({"command": "file.new"}));
+    assert_eq!(response["ok"], true, "{response}");
+    assert!(app.session.path.is_none());
+    script.report(Event::Text { thought: false, text: "A new design is open.".into() });
+    end_turn_now(&mut app, &script, &ctx);
+
+    let contexts = data.join("agent-chat").join("contexts");
+    let unsaved: Vec<_> = std::fs::read_dir(&contexts).map(|d| d.map(|e| e.unwrap().path()).collect()).unwrap_or_default();
+    assert_eq!(unsaved.len(), 1, "the conversation goes on under the data folder: {unsaved:?}");
+    let copy = StoreContext::open(&unsaved[0]).unwrap();
+    assert_eq!(copy.meta().design, "");
+    let got = records_in(&unsaved[0]);
+    assert_eq!(user_texts(&got), ["start a second design"]);
+    assert!(got.contains(&Record::Agent { text: "A new design is open.".into(), thought: false }), "the rest of the turn is kept: {got:?}");
+
+    send(&mut app, &ctx, "add a box".into());
+    assert_eq!(user_texts(&records_in(&unsaved[0])), ["start a second design", "add a box"]);
+    let a = store::folder_for(&first);
+    assert_eq!(user_texts(&records_in(&a)), ["start a second design"], "the first design's folder keeps what was said there");
+    assert!(!records_in(&a).iter().any(|r| matches!(r, Record::Agent { .. })));
+}
+
 #[test]
 fn saving_over_a_design_sets_its_old_folder_aside() {
     let root = context_scratch("aside");

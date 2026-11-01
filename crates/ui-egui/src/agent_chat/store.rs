@@ -408,6 +408,17 @@ impl Context {
     /// plan, notes and references. This one is left as it is. A `dir` already holding a context is
     /// left as it is (`AlreadyExists`).
     pub fn copy_to(&self, dir: &Path, design: &str) -> io::Result<Context> {
+        self.copy_with_id(dir, design, new_id()?)
+    }
+
+    /// The agent's own New: a copy for the new, unsaved design in [`unsaved_folder`]`(data, id)`,
+    /// named by its new id, with an empty design until the first save. This one is left as it is.
+    pub fn copy_unsaved(&self, data: &Path) -> io::Result<Context> {
+        let id = new_id()?;
+        self.copy_with_id(&unsaved_folder(data, &id), "", id)
+    }
+
+    fn copy_with_id(&self, dir: &Path, design: &str, id: String) -> io::Result<Context> {
         real_dir(&self.dir)?;
         reject_link(dir)?;
         if fs::symlink_metadata(dir.join("context.json")).is_ok() {
@@ -419,7 +430,7 @@ impl Context {
         fs::create_dir(dir)?;
         copy_regular(&self.dir, dir)?;
         let mut meta = self.meta.clone();
-        meta.id = new_id()?;
+        meta.id = id;
         meta.design = design.to_owned();
         let bytes = serde_json::to_vec(&meta).map_err(io::Error::other)?;
         write_whole(&dir.join("context.json"), &bytes)?;
@@ -687,6 +698,20 @@ mod tests {
         let err = src.copy_to(&root.join("copy_context"), "copy.sc").unwrap_err();
         assert_eq!(err.kind(), ErrorKind::AlreadyExists);
         assert_eq!(Context::open(&root.join("copy_context")).unwrap().transcript().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn a_copy_for_an_unsaved_design_is_named_by_its_own_id() {
+        let root = scratch("copy-unsaved");
+        let src = Context::create(&root.join("bracket_context"), "bracket.sc", "claude").unwrap();
+        src.append(&user("hello")).unwrap();
+        let data = root.join("data");
+        let copy = src.copy_unsaved(&data).unwrap();
+        assert_ne!(copy.meta().id, src.meta().id);
+        assert_eq!(copy.meta().design, "", "unsaved until its first save");
+        assert_eq!(copy.dir(), unsaved_folder(&data, &copy.meta().id).as_path());
+        assert_eq!(Context::open(copy.dir()).unwrap().transcript().unwrap(), vec![user("hello")]);
+        assert_eq!(Context::open(&root.join("bracket_context")).unwrap().meta(), src.meta(), "the source is as it was");
     }
 
     #[test]

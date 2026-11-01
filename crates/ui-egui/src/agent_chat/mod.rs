@@ -841,14 +841,28 @@ impl AgentChat {
         if link.design == design {
             return;
         }
-        if design.is_none() {
-            self.context_link = None;
+        let Some(target) = design.as_deref() else {
+            // The agent's own New carries the conversation (#7526): it goes on in a copy under the
+            // data folder, as an unsaved design's does. Anything else starts over.
+            let copy = match (&link.context, &self.context_root) {
+                (Some(context), Some(root)) if !link.failed => context.copy_unsaved(root),
+                _ => {
+                    self.context_link = None;
+                    return;
+                }
+            };
+            match copy {
+                Ok(copy) => {
+                    link.context = Some(copy);
+                    link.design = None;
+                }
+                Err(error) => self.context_error(error),
+            }
             return;
-        }
+        };
         if link.failed {
             return;
         }
-        let Some(target) = design.as_deref() else { return };
         let result = (|| -> std::io::Result<()> {
             let Some(context) = &mut link.context else { return Ok(()) };
             let dir = store::folder_for(target);

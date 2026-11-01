@@ -184,6 +184,8 @@ conversation shows the merged step with an Undo button while it's still the late
 Each open design tab owns an `AgentChat`, including its transcript, backend session, agent
 selection, sign-in retry, draft, attachments, pending messages and approval state. The conversation
 is also kept in `<design>_context/` beside the design, or in the data folder until first save.
+When the agent's own New or Open carries the conversation into another design, it goes on being
+kept for that design, as after Save As; for a new unsaved design, in a copy in the data folder.
 `DocSlot` parks that state alongside its `Session`; switching restores both together. Panel visibility,
 placement, agent discovery, the latest sign-in evidence per agent, endpoint model cache, settings
 dialogs, the desktop endpoint starter and the context data folder remain window state. A new tab gets
